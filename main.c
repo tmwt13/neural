@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #define NN_IMPLEMENTATION
-#include "matrix.h"
+#include "lib/matrix.h"
 #include <time.h>
 
 typedef struct{
