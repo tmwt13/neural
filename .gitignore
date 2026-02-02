@@ -1,1 +1,9 @@
-main
+# Windows Executables
+*.exe
+*.msi
+*.com
+*.bat
+
+# macOS / Linux (falls Endungen genutzt werden)
+*.out
+*.app
