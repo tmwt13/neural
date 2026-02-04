@@ -16,6 +16,29 @@ typedef struct{
   float learning_rate, loss;
 } Network;
 
+void sigmoid(Mat *dest, const Mat *src) {
+    for (size_t i = 0; i < src->rows * src->cols; ++i) {
+        dest->data[i] = 1.0f / (1.0f + expf(-src->data[i]));
+    }
+}
+
+void sigmoid_deriv(Mat *dest, const Mat *output) {
+    for (size_t i = 0; i < output->rows * output->cols; ++i) {
+        float y = output->data[i];
+        dest->data[i] *= y * (1.0f - y);
+    }
+}
+
+void mse_loss_and_grad(Mat *grad, const Mat *pred, const Mat *target) {
+    float sum = 0.0f;
+    for (size_t i = 0; i < pred->rows; ++i) {
+        float err = MAT_AT(*pred, i, 0) - MAT_AT(*target, i, 0);
+        MAT_AT(*grad, i, 0) = 2.0f * err;  // derivative of MSE w.r.t. output
+        sum += err * err;
+    }
+    // return sum / pred->rows;  // if you want actual mean
+}
+
 void random_fill(float* data, size_t len);
 int ctoi(const char* text){
   int res;
@@ -115,9 +138,9 @@ void create_network(Network *nn, const uint8_t *layer, const uint8_t len){
 }
 
 void layer_feed_forward(FCL* layer);
-void layer_backward_prop(FCL* layer, float learing_rate);
+void layer_backward(FCL* layer, float learing_rate,bool update);
 const Mat* feed_forward(Network* nn,const Mat* input);
-float back_prop(Network* nn, const Mat* expected_out);
+float back_prop(Network* nn, const Mat* expected_out, bool update);
 
 float loss(const Mat *result,const Mat *expected){
   ASSERT(result->rows == expected->rows, "ERROR");
@@ -166,7 +189,7 @@ void relu_grad(Mat *dest, Mat *output) {
   }
 }
 
-int main(){
+int miain(){
   printf("Hallo Welt!");
 
   // XOR:
@@ -202,7 +225,7 @@ int main(){
     MAT_AT(input, 1, 0) = data[data_idx][1];
     MAT_AT(expeced_out, 0, 0) = data[data_idx][2];
     out = feed_forward(&nn, &input);
-    loss = back_prop(&nn, &expeced_out);
+    loss = back_prop(&nn, &expeced_out, true);
     if (iters % 20== 0) printf("Pass: %zu, Loss: %f\n", iters, loss*loss);
   }
 
@@ -227,45 +250,52 @@ void layer_feed_forward(FCL* layer){
   mat_mult(&layer->output, &layer->weights, &layer->input,1);
   mat_add(&layer->output, &layer->bias);
 
-  activ(&layer->output, &layer->output);
+  sigmoid(&layer->output, &layer->output);
 }
 
-void layer_backward_prop(FCL* layer, float learing_rate){
-  activ_grad(&layer->in_grad, &layer->output);
+void layer_backward(FCL* layer, float learing_rate,bool update){
+  sigmoid_deriv(&layer->in_grad, &layer->output);
  
-  mat_mult_nt(&layer->dweights, &layer->in_grad, &layer->input, 1);
-  // mat_copy(&layer->dbias, &layer->in_grad);
+  mat_mult_nt(&layer->dweights, &layer->in_grad, &layer->input, 0);
+  mat_add(&layer->dbias, &layer->in_grad);
   mat_mult_tn(&layer->out_grad, &layer->weights, &layer->in_grad, 1);
 
   // update weights
-  mat_sub_with_factor(&layer->weights, &layer->dweights, learing_rate);
-  mat_sub_with_factor(&layer->dbias, &layer->in_grad, learing_rate);
+  if (update) {
+    mat_sub_with_factor(&layer->weights, &layer->dweights, learing_rate);
+    mat_sub_with_factor(&layer->bias, &layer->dbias, learing_rate);
+
+    mat_fill(&layer->dweights, 0);
+    mat_fill(&layer->dbias, 0);
+  }
 }
 
-const Mat* feed_forward(Network* nn,const Mat* input){
-  Mat* first_input = &nn->layer[0].input;
-  mat_copy(first_input, input);
-  for(uint8_t i=0;i<nn->layer_count;i++){
-    layer_feed_forward(nn->layer + i);
-  }
+const Mat* feed_forward(Network* nn, const Mat* input) {
+    mat_copy(&nn->layer[0].input, input);
 
-  return &nn->layer[nn->layer_count-1].output;
+    for (size_t i = 0; i < nn->layer_count; ++i) {
+        layer_feed_forward(&nn->layer[i]);
+    }
+
+    return &nn->layer[nn->layer_count-1].output;
 }
 
-float back_prop(Network* nn, const Mat* expected_out){
-  Mat* output = &nn->layer[nn->layer_count-1].output;
-  Mat* first_grad = &nn->layer[nn->layer_count-1].in_grad;
-  nn->loss = loss(output, expected_out);
+float back_prop(Network* nn, const Mat* target,bool update) {
+    Mat output_grad = nn->layer[nn->layer_count-1].in_grad;
 
-  // loss grad:
-  mat_copy(first_grad, output);
-  mat_sub(first_grad, expected_out);
-  
-  for (int i = nn->layer_count - 1; i >= 0; i--) {
-    layer_backward_prop(nn->layer+i, nn->learning_rate);
-  }
+    mse_loss_and_grad(&output_grad, &nn->layer[nn->layer_count-1].output, target);
 
-  return nn->loss;
+    for (int i = (int)nn->layer_count - 1; i >= 0; --i) {
+        layer_backward(nn->layer + i, nn->learning_rate,update);
+    }
+
+    float loss = 0.0f;
+    Mat *out = &nn->layer[nn->layer_count-1].output;
+    for (size_t i = 0; i < out->rows; ++i) {
+        float e = MAT_AT(*out, i, 0) - MAT_AT(*target, i, 0);
+        loss += e * e;
+    }
+    return loss;
 }
 
 void random_fill(float* data, size_t len){
