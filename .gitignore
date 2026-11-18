@@ -1,9 +1,6 @@
-# Windows Executables
-*.exe
-*.msi
-*.com
-*.bat
+build/
+lib/
 
-# macOS / Linux (falls Endungen genutzt werden)
-*.out
-*.app
+.DS_Store
+*.DS_Store
+

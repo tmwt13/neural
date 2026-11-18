@@ -34,8 +34,9 @@ void mat_mult_tn(Mat *res, Mat *a, Mat *b, bool clear);
 void mat_mult_tt(Mat *res, Mat *a, Mat *b, bool clear);
 void mat_scalar_mult(Mat *b, Mat *a, float s);
 
-// #define NN_IMPLEMENTATION
-#ifdef NN_IMPLEMENTATION
+#ifndef MAT_IMPLEMENTATION
+#define MAT_IMPLEMENTATION
+
 const char *print_to_console(const char *msg) {
   // for now just return the input back again
   return msg;

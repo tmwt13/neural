@@ -1,13 +1,38 @@
-#include "lib/raylib.h"
+#include "raylib.h"
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>     // for exit()
-#include "main.c"       // assuming this contains your Mat, Network, create_network,
+
+#define NN_IMPLEMENTATION
+#include "neural.h"       // assuming this contains your Mat, Network, create_network,
 // feed_forward, back_prop, create_matrix, MAT_AT, etc.
 
-#define IMG_COUNT 5
+#define IMG_COUNT 2
 #define IMG_WIDTH 28
 #define IMG_HEIGHT 28
+
+static const char *assets_path_fmt = "./assets/num_1_9/%zu.png";
+static Image imgs[IMG_COUNT];
+static Image gen_imgs[IMG_COUNT];
+static Texture2D textures[IMG_COUNT];
+static Texture2D gen_textures[IMG_COUNT];
+static Color * pixels[IMG_COUNT];
+static char name_buf[100];
+
+static int nimg = -1;
+static void load_number(int num)
+{
+   ++nimg;
+   int len = snprintf(name_buf,100, assets_path_fmt, num);
+   printf("loading: '%s'\n", name_buf);
+   imgs[nimg] = LoadImage(name_buf);
+   if(imgs[nimg].data == NULL) exit(69);
+   ImageResize(imgs + nimg, IMG_WIDTH, IMG_HEIGHT);
+   textures[nimg] = LoadTextureFromImage(imgs[nimg]);
+   gen_imgs[nimg] = GenImageColor(100, 100, BLACK);
+   gen_textures[nimg] = LoadTextureFromImage(gen_imgs[nimg]);
+   pixels[nimg] = LoadImageColors(imgs[nimg]);
+}
 
 int main(void) {
     const int WINDOW_W = 800;
@@ -16,30 +41,13 @@ int main(void) {
     InitWindow(WINDOW_W, WINDOW_H, "NN interpolation 3 7");
     SetTargetFPS(60);
 
-    Image imgs[IMG_COUNT];
-    Image gen_imgs[IMG_COUNT];
-    Texture2D textures[IMG_COUNT];
-    Texture2D gen_textures[IMG_COUNT];
-    Color * pixels[IMG_COUNT];
-
-    char name_buf[100];
-    int len;
-    for (size_t i = 0; i < IMG_COUNT; i++) {
-      len = snprintf(name_buf,100, "./assets2/%zu.png",i+1);
-      printf("loading: '%s'\n", name_buf);
-      imgs[i] = LoadImage(name_buf);
-      if(imgs[i].data == NULL) exit(69);
-      ImageResize(imgs + i, IMG_WIDTH, IMG_HEIGHT);
-      textures[i] = LoadTextureFromImage(imgs[i]);
-      gen_imgs[i] = GenImageColor(100, 100, BLACK);
-      gen_textures[i] = LoadTextureFromImage(gen_imgs[i]);
-      pixels[i] = LoadImageColors(imgs[i]);
-    }
+    load_number(3);
+    load_number(7);
 
     Network nn;
-    uint8_t layer_sizes[] = {3,80,24,1};
+    uint8_t layer_sizes[] = {3,64,24,1};
     create_network(&nn, layer_sizes, 4);
-    nn.learning_rate = 0.08f;   
+    nn.learning_rate = 0.10f;   
 
     Mat input     = create_matrix(3, 1);
     Mat expected  = create_matrix(1, 1);
@@ -49,7 +57,7 @@ int main(void) {
     float last_loss = 0.0f;
 
     srand(time(NULL));
-    for(size_t iters=0;!training_done && iters < 10000;iters++){
+    for(size_t iters=0;!training_done && iters < 100000;iters++){
         // size_t img_id = iters % IMG_COUNT;
         size_t img_id = (float)rand() / (float)RAND_MAX * IMG_COUNT;
         if (!training_done) {
@@ -73,58 +81,56 @@ int main(void) {
             last_loss = total_loss / (float)pixel_count;
 
             epoch++;
-            if (epoch % 50 == 0) {
+            if (epoch % 100 == 0) {
                 printf("(%zu) Epoch %4zu | avg loss: %.6f\n", img_id, epoch, last_loss);
             }
 
         }
 
+        float v;
+        unsigned char c;
+        const Mat *out;
+        for (size_t im = 0; im < IMG_COUNT; im++) {
+          for (int y = 0; epoch % 100 == 0 && y < gen_imgs[im].height; y++) {
+            for (int x = 0; x < gen_imgs[im].width; x++) {
+              MAT_AT(input, 0, 0) = (float)x / (float)gen_imgs[im].width;
+              MAT_AT(input, 1, 0) = (float)y / (float)gen_imgs[im].height;
+              MAT_AT(input, 2, 0) = (float)im / IMG_COUNT;
 
+              out = feed_forward(&nn, &input);
+              v = MAT_AT(*out, 0, 0);
+
+              c = (unsigned char)(v < 0 ? 0 : v > 1 ? 255 : v * 255.0f + 0.5f);
+
+              ImageDrawPixel(gen_imgs + im, x, y, (Color){c, c, c, 255});
+            }
+          }
+          UpdateTexture(gen_textures[im], gen_imgs[im].data);
+        }
         // // ── DRAW ──────────────────────────────────────────────────
-        // BeginDrawing();
-        //     if(IsKeyPressed(KEY_E)) training_done = true;
-        //     ClearBackground(RAYWHITE);
+        BeginDrawing();
+            if(IsKeyPressed(KEY_E)) training_done = true;
+            ClearBackground(RAYWHITE);
 
-        //     DrawText("Original", 20, 20, 20, DARKGRAY);
-        //     for (size_t im = 0; im < IMG_COUNT; im++) {
-        //       DrawTexture(textures[im], 0, 50+50*im, WHITE);
-        //     }
+            DrawText("Original", 20, 20, 20, DARKGRAY);
+            for (size_t im = 0; im < IMG_COUNT; im++) {
+              DrawTexture(textures[im], 0, 50+50*im, WHITE);
+            }
 
-        //     DrawText("Neural Network reconstruction", 420, 20, 20, DARKGRAY);
-        //     for (size_t im = 0; im < IMG_COUNT; im++) {
-        //       DrawTexture(gen_textures[im], (uint8_t)(im/5+1)*100, 100*(1+im%5), WHITE);
-        //     }
+            DrawText("Neural Network reconstruction", 420, 20, 20, DARKGRAY);
+            for (size_t im = 0; im < IMG_COUNT; im++) {
+              DrawTexture(gen_textures[im], (uint8_t)(im/IMG_COUNT+1)*100, 100*(1+im%IMG_COUNT), WHITE);
+            }
 
-        //     DrawText(TextFormat("Epoch: %zu   Loss: %.6f", epoch, last_loss),
-        //              20, WINDOW_H - 40, 20, training_done ? GREEN : ORANGE);
+            DrawText(TextFormat("Epoch: %zu   Loss: %.6f", epoch, last_loss),
+                     20, WINDOW_H - 40, 20, training_done ? GREEN : ORANGE);
 
-        //     if (training_done) {
-        //         DrawText("Training finished", 420, WINDOW_H - 40, 20, GREEN);
-        //     }
-        // EndDrawing();
-        if(last_loss < 0.01) break;
+            if (training_done) {
+                DrawText("Training finished", 420, WINDOW_H - 40, 20, GREEN);
+            }
+        EndDrawing();
     }
 
-    float v;
-    unsigned char c;
-    const Mat *out;
-    for (size_t im = 0; im < IMG_COUNT; im++) {
-      for (int y = 0; epoch % 100 == 0 && y < gen_imgs[im].height; y++) {
-        for (int x = 0; x < gen_imgs[im].width; x++) {
-          MAT_AT(input, 0, 0) = (float)x / (float)gen_imgs[im].width;
-          MAT_AT(input, 1, 0) = (float)y / (float)gen_imgs[im].height;
-          MAT_AT(input, 2, 0) = (float)im / IMG_COUNT;
-
-          out = feed_forward(&nn, &input);
-          v = MAT_AT(*out, 0, 0);
-
-          c = (unsigned char)(v < 0 ? 0 : v > 1 ? 255 : v * 255.0f + 0.5f);
-
-          ImageDrawPixel(gen_imgs + im, x, y, (Color){c, c, c, 255});
-        }
-      }
-      UpdateTexture(gen_textures[im], gen_imgs[im].data);
-        }
 
 
     Image scaledimg = ImageCopy(gen_imgs[0]);

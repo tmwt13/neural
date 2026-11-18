@@ -1,20 +1,40 @@
+#include <stddef.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
-#define NN_IMPLEMENTATION
-#include "lib/matrix.h"
+#include "matrix.h"
 #include <time.h>
 
-typedef struct{
+typedef struct {
   Mat input, out_grad, weights, bias, dweights, dbias, output, in_grad;  
-} FCL;
+}FCL;
 
-typedef struct{
+typedef struct {
   float *data;
   size_t data_size, layer_count;
   FCL *layer;
   float learning_rate, loss;
 } Network;
+
+void random_fill(float* data, size_t len);
+
+void create_network(Network *nn, const uint8_t *layer, const uint8_t len);
+void init_threads(Network* nn);
+
+const Mat* feed_forward(Network* nn,const Mat* input);
+void layer_feed_forward(FCL* layer);
+
+float back_prop(Network* nn, const Mat* expected_out, bool update);
+void layer_backward(FCL* layer, float learing_rate,bool update);
+void mse_loss_and_grad(Mat *grad, const Mat *pred, const Mat *target);
+void sigmoid(Mat *dest, const Mat *src);
+void sigmoid_deriv(Mat *dest, const Mat *output);
+void activ(Mat *dest, Mat *src);
+void activ_grad(Mat *dest, Mat *output);
+void relu(Mat *dest, Mat *src);
+void relu_grad(Mat *dest, Mat *output);
+
+#ifdef NN_IMPLEMENTATION
 
 void sigmoid(Mat *dest, const Mat *src) {
     for (size_t i = 0; i < src->rows * src->cols; ++i) {
@@ -39,8 +59,7 @@ void mse_loss_and_grad(Mat *grad, const Mat *pred, const Mat *target) {
     // return sum / pred->rows;  // if you want actual mean
 }
 
-void random_fill(float* data, size_t len);
-int ctoi(const char* text){
+static int ctoi(const char* text){
   int res;
   for(uint8_t i=0;i<10 && text[i] != 0;i++){
     if(text[i] < 48 || text[i] > 57) return -1;
@@ -50,6 +69,10 @@ int ctoi(const char* text){
 }
 
 void create_network(Network *nn, const uint8_t *layer, const uint8_t len){
+  #ifdef NN_MULTITHREAD
+    printf(" -- MULTITHREADING: ON -- \n");
+    init_threads(nn);
+  #endif
   size_t data_size = 0;
   data_size += layer[0]; // inputs first layer
   data_size += layer[0]; // out_grad first layer
@@ -80,7 +103,6 @@ void create_network(Network *nn, const uint8_t *layer, const uint8_t len){
     size_t outsize = layer[i+1];
     printf("\tLayer %u: %zu -> %zu\n",i,insize,outsize);
     FCL *fcl = nn->layer+i;
-    printf("INPUT AT %p\n",ptr);
     fcl->input = (Mat){
       .rows = insize,
       .cols = 1,
@@ -132,23 +154,7 @@ void create_network(Network *nn, const uint8_t *layer, const uint8_t len){
       .cols = 1,
       .data = ptr+outsize,
     };
-    printf("OUTPUT AT %p\n",ptr);
-    // da gleichzeitig input von nächstem ptr += outsize; // output / grads prev layer
   }
-}
-
-void layer_feed_forward(FCL* layer);
-void layer_backward(FCL* layer, float learing_rate,bool update);
-const Mat* feed_forward(Network* nn,const Mat* input);
-float back_prop(Network* nn, const Mat* expected_out, bool update);
-
-float loss(const Mat *result,const Mat *expected){
-  ASSERT(result->rows == expected->rows, "ERROR");
-  float l = 0;
-  for (uint8_t r = 0; r < result->rows; r++) {
-    l+=(MAT_AT(*result,r,0)-MAT_AT(*expected, r,0));
-  }
-  return 2.0f * l;
 }
 
 void activ(Mat *dest, Mat *src){
@@ -189,62 +195,6 @@ void relu_grad(Mat *dest, Mat *output) {
   }
 }
 
-int miain(){
-  printf("Hallo Welt!");
-
-  // XOR:
-  //   0,0 -> 0
-  //   1,0 -> 1
-  //   0,1 -> 1
-  //   1,1 -> 0
-  // Layer:
-  //   2x4 -> activ -> 4x1 -> active -> out
-
-  float data[4][3] = {
-    {0,0,0},
-    {1,0,1},
-    {0,1,1},
-    {1,1,0},
-  };
-
-  Network nn;
-  uint8_t layer[3] = {2,4,1};
-  create_network(&nn, layer, 3);
-  nn.learning_rate = 0.1;
-
-  Mat input = create_matrix(2, 1);
-  Mat expeced_out = create_matrix(1, 1);
-  const Mat *out;
-  size_t data_idx = 0;
-  float loss;
-  nn.learning_rate = 1;
-  for (size_t iters = 0; iters < 600; iters++) {
-    data_idx = iters % 4;
-    nn.learning_rate *= 0.999;
-    MAT_AT(input, 0, 0) = data[data_idx][0];
-    MAT_AT(input, 1, 0) = data[data_idx][1];
-    MAT_AT(expeced_out, 0, 0) = data[data_idx][2];
-    out = feed_forward(&nn, &input);
-    loss = back_prop(&nn, &expeced_out, true);
-    if (iters % 20== 0) printf("Pass: %zu, Loss: %f\n", iters, loss*loss);
-  }
-
-  char buf[20];
-  for (;;) {
-    printf("Input A: ");
-    if (scanf("%19s", buf) != 1) break; // Liest String ein
-    MAT_AT(input, 0, 0) = (float)atof(buf); // atof ist Standard für "ascii to float"
-
-    printf("Input B: ");
-    if (scanf("%19s", buf) != 1) break;
-    MAT_AT(input, 1, 0) = (float)atof(buf);
-
-    out = feed_forward(&nn, &input);
-    printf("Result: ");
-    mat_print(*out);
-}
-  return 0;
-}
 
 void layer_feed_forward(FCL* layer){
   mat_mult(&layer->output, &layer->weights, &layer->input,1);
@@ -256,9 +206,14 @@ void layer_feed_forward(FCL* layer){
 void layer_backward(FCL* layer, float learing_rate,bool update){
   sigmoid_deriv(&layer->in_grad, &layer->output);
  
+  // update out grads
+  mat_mult_tn(&layer->out_grad, &layer->weights, &layer->in_grad, 1);
+  // continue with next layer on next thread -> 
+  // next_thread_calc_grad();
+
+  // do simultanious
   mat_mult_nt(&layer->dweights, &layer->in_grad, &layer->input, 0);
   mat_add(&layer->dbias, &layer->in_grad);
-  mat_mult_tn(&layer->out_grad, &layer->weights, &layer->in_grad, 1);
 
   // update weights
   if (update) {
@@ -280,14 +235,133 @@ const Mat* feed_forward(Network* nn, const Mat* input) {
     return &nn->layer[nn->layer_count-1].output;
 }
 
-float back_prop(Network* nn, const Mat* target,bool update) {
-    Mat output_grad = nn->layer[nn->layer_count-1].in_grad;
+#include <pthread.h>
+#include <semaphore.h>
+#define THREAD_COUNT 2
+pthread_t threads[THREAD_COUNT];
+int ids[THREAD_COUNT];
+typedef struct{
+  int *data;
+  size_t count;
+  size_t capacity;
+  pthread_mutex_t mutex;
+  pthread_cond_t cond_done;
+  pthread_cond_t cond_work;
+  size_t layers_done;
+  bool update;
+  Network *network;
+} Layers;
 
-    mse_loss_and_grad(&output_grad, &nn->layer[nn->layer_count-1].output, target);
+#define DA_APPEND(ptr, item)                                                   \
+  do {                                                                         \
+    if ((ptr)->count == (ptr)->capacity) {                                     \
+      if ((ptr)->capacity == 0)                                                \
+        (ptr)->capacity = 1;                                                   \
+      (ptr)->capacity *= 2;                                                    \
+      (ptr)->data = realloc((ptr)->data, sizeof((ptr)->data[0]) * (ptr)->capacity * 2);  \
+      if ((ptr)->data == NULL)                                                 \
+        exit(69);                                                              \
+    }                                                                          \
+    (ptr)->data[(ptr)->count++] = item;                                        \
+  } while (0)
 
-    for (int i = (int)nn->layer_count - 1; i >= 0; --i) {
-        layer_backward(nn->layer + i, nn->learning_rate,update);
+#define DA_POP(ptr) (ptr)->data[((ptr)->count--) - 1]
+
+Layers proc_list = {0};
+
+void process_layer(int layer_id){
+    if(layer_id < 0) return;
+    pthread_mutex_lock(&proc_list.mutex);
+    DA_APPEND(&proc_list, layer_id);
+    pthread_cond_broadcast(&proc_list.cond_work);
+    pthread_mutex_unlock(&proc_list.mutex);
+}
+
+void layer_backward_mt(Network *nn, int layer_id, bool update){
+  if(layer_id < 0) return;
+  FCL* layer = &nn->layer[layer_id];
+  sigmoid_deriv(&layer->in_grad, &layer->output);
+ 
+  // update out grads
+  mat_mult_tn(&layer->out_grad, &layer->weights, &layer->in_grad, 1);
+  // continue with next layer on next thread -> 
+  process_layer(layer_id-1);
+  
+  // do simultanious
+  mat_mult_nt(&layer->dweights, &layer->in_grad, &layer->input, 0);
+  mat_add(&layer->dbias, &layer->in_grad);
+
+  // update weights
+  if (update) {
+    mat_sub_with_factor(&layer->weights, &layer->dweights, nn->learning_rate);
+    mat_sub_with_factor(&layer->bias, &layer->dbias, nn->learning_rate);
+
+    mat_fill(&layer->dweights, 0);
+    mat_fill(&layer->dbias, 0);
+  }
+
+  pthread_mutex_lock(&proc_list.mutex);
+  proc_list.layers_done++;
+  pthread_mutex_unlock(&proc_list.mutex);
+}
+#include <string.h>
+#include <errno.h>
+#include <fcntl.h>
+
+void *work(void *args) {
+  // Layers *proc_list = (Layers*)da_layers;
+  int id = *(int*)args;
+  bool update;
+  while (1) {
+    pthread_mutex_lock(&proc_list.mutex);
+    if (proc_list.count == 0) {
+      if (proc_list.layers_done == proc_list.network->layer_count) pthread_cond_broadcast(&proc_list.cond_done);
+      pthread_cond_wait(&proc_list.cond_work, &proc_list.mutex);
+      update = proc_list.update;
+      pthread_mutex_unlock(&proc_list.mutex);
+      continue;
     }
+    int layer_id = DA_POP(&proc_list);
+    pthread_mutex_unlock(&proc_list.mutex);
+    layer_backward_mt(proc_list.network, layer_id, update);
+  }
+}
+
+int ids[THREAD_COUNT];
+void init_threads(Network* nn) {
+  proc_list = (Layers){0};
+  pthread_mutex_init(&proc_list.mutex, NULL);
+  pthread_cond_init(&proc_list.cond_done, NULL);
+  pthread_cond_init(&proc_list.cond_work, NULL);
+  proc_list.network = nn;
+  
+  for(size_t i=0;i<THREAD_COUNT;i++){
+    ids[i] = i;
+    pthread_create(threads+i, NULL, work, ids+i);
+  }
+}
+
+float back_prop(Network *nn, const Mat *target, bool update) {
+  Mat output_grad = nn->layer[nn->layer_count - 1].in_grad;
+
+  mse_loss_and_grad(&output_grad, &nn->layer[nn->layer_count - 1].output, target);
+  
+#ifdef NN_MULTITHREAD
+  pthread_mutex_lock(&proc_list.mutex);
+  proc_list.update = update;
+  proc_list.layers_done = 0;
+  pthread_mutex_unlock(&proc_list.mutex);
+
+  layer_backward_mt(nn, nn->layer_count - 1, update);
+  pthread_mutex_lock(&proc_list.mutex);
+  if (proc_list.layers_done != nn->layer_count) pthread_cond_wait(&proc_list.cond_done, &proc_list.mutex);
+  proc_list.layers_done = 0;
+  pthread_mutex_unlock(&proc_list.mutex);
+#else
+  for (int i = (int)nn->layer_count - 1; i >= 0; --i) {
+    layer_backward(nn->layer + i, nn->learning_rate, update);
+  }
+#endif
 
     float loss = 0.0f;
     Mat *out = &nn->layer[nn->layer_count-1].output;
@@ -302,5 +376,7 @@ void random_fill(float* data, size_t len){
   srand(time(NULL));
   for (size_t i=0;i<len;i++){
     data[i] = (float)rand()/(float)RAND_MAX * 2.0f - 1;
+  
   }
 }
+#endif
